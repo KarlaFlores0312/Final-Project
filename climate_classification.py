@@ -55,10 +55,8 @@ def load_scenario_data(base_data_path, scenario):
 
 def select_period(data, start_year, end_year):
     """
-    Selects a period from the xarray DataArray.
-    
-    this selects data (precipitation and temperature)
-    for the specific time period.
+    This function extracts the data (pr and tas) that falls 
+    withing the chosen time period.
     
     IMPORTANT: Time is saved in strings like "2031", not in full dates.
     So we slice time like this : slice("2031", "2060")
@@ -67,33 +65,42 @@ def select_period(data, start_year, end_year):
 
 def mean_over_period(data, start_year, end_year):
     """
-    Returns mean value over the selected period.
-    Output: 2D (lat, lon)
+    This function takes climate data(tas or pr) and a time period as input 
+    and returns the mean value of the data over that period for each grid cell.
+    The mean will be used in the AI calculation later.
     """
     subset = select_period(data, start_year, end_year)
     return subset.mean("time") 
 
 
-# ============================================================
+# -----------------------------------------------
 # 3) CLIMATE INDEX (DE MARTONNE)
-# ============================================================
+# -----------------------------------------------
 
-def kelvin_to_celsius(tas_k):
+def kelvin_to_celsius(tas_k): 
+    """
+    this function takes temperature in kelvin as input and returns it in celsius
+    """
     return tas_k - 273.15
 
 
 def compute_de_martonne_index(P_mm_year, T_celsius):
+    """
+    this function calculates the De Martonne 
+    index with precipitation in mm/year and temperature in celsius
+    """
     denom = T_celsius + 10
 
-    # Mask invalid denominator (T <= -10°C)
-    denom = denom.where(denom > 0.1)
+    # Mask invalid denominator (T <= -10°C): this mask is necessary to 
+    #avoid negative temperatures that make the AI invalid (negative).
+    denom = denom.where(denom > 0.1)  #this avoids near 0 values
 
     AI = P_mm_year / denom
     return AI
 
-# ============================================================
+# ---------------------------------------
 # 4) CLIMATE CLASSIFICATION
-# ============================================================ 
+# ---------------------------------------
 def classify_aridity(ai):
     """
     Returns climate class codes:
@@ -119,20 +126,9 @@ def classify_aridity(ai):
      
     classes = classes.where(ai.notnull())
     return classes 
-
-def compute_drying_mask(climate_hist, climate_future):
-    """
-    Drying mask = True where future is drier than historical.
-
-    This works because:
-    smaller class number = drier
-    (Arid=0 ... Humid=3)
-    """
-    return climate_future < climate_hist  
-
-
+  
 # ---------------------------------------------------------
-# 5) FULL CLIMATE PIPELINE (this is what main.py will call)
+# 5) FULL CLIMATE PIPELINE:climate calculations only (this will go in the main loop)
 # ------------------------------------------------------------
 
 def run_climate_pipeline(base_data_path, scenario, start_year, end_year,
@@ -145,15 +141,15 @@ def run_climate_pipeline(base_data_path, scenario, start_year, end_year,
     tas_hist_all, pr_hist_all = load_scenario_data(base_data_path, "historical")
     tas_fut_all, pr_fut_all = load_scenario_data(base_data_path, scenario)
 
-    # --- Historical mean climate
+    # --- Calculates historical mean climate
     T_hist = kelvin_to_celsius(mean_over_period(tas_hist_all, hist_start, hist_end))
     P_hist = mean_over_period(pr_hist_all, hist_start, hist_end)
 
-    # --- Future mean climate
+    # --- Calculates future mean climate
     T_fut = kelvin_to_celsius(mean_over_period(tas_fut_all, start_year, end_year))
     P_fut = mean_over_period(pr_fut_all, start_year, end_year) 
     
-    # Mask only cells that are zero in BOTH periods (likely ocean)
+    # Mask only cells that are zero in BOTH periods (over ocean pr is 0)
     ocean_mask = (P_hist == 0) & (P_fut == 0)
 
     P_hist = P_hist.where(~ocean_mask)
@@ -162,7 +158,7 @@ def run_climate_pipeline(base_data_path, scenario, start_year, end_year,
     T_hist = T_hist.where(~ocean_mask)
     T_fut  = T_fut.where(~ocean_mask)
 
-    # --- De Martonne aridity index
+    # --- Calculation of the De Martonne aridity index
     AI_hist = compute_de_martonne_index(P_hist, T_hist)
     AI_fut = compute_de_martonne_index(P_fut, T_fut)
 
@@ -170,8 +166,6 @@ def run_climate_pipeline(base_data_path, scenario, start_year, end_year,
     climate_hist = classify_aridity(AI_hist)
     climate_future = classify_aridity(AI_fut)
 
-    # --- Drying mask
-    drying_mask = compute_drying_mask(climate_hist, climate_future)
 
     return {
         "scenario": scenario,
@@ -188,13 +182,13 @@ def run_climate_pipeline(base_data_path, scenario, start_year, end_year,
         "AI_future": AI_fut,
         "climate_future": climate_future,
 
-        "drying_mask": drying_mask,
-
         "lat": AI_hist["lat"],
         "lon": AI_hist["lon"],
     }
 
-
+#------------------------------------------------------------
+# 6) PLOTTING FUNCTION (this also goes in the main loop)
+#-----------------------------------------------------------
 def plot_climate_classification_geo(climate_map, title="Climate Classification Map"):
     data = climate_map.values.astype(float)
     lats = climate_map["lat"].values
@@ -238,28 +232,3 @@ def plot_climate_classification_geo(climate_map, title="Climate Classification M
 
     plt.tight_layout()
     plt.show()
-
-
-if __name__ == "__main__":
-    base_data_path = r"Final_project_python/data"
-
-    results = run_climate_pipeline(
-        base_data_path=base_data_path,
-        scenario="ssp126",
-        start_year=2031,
-        end_year=2060
-    )
-
-    plot_climate_classification_geo(
-        results["climate_hist"],
-        title="Historical Climate Classification (1981–2010)"
-    )
-
-    plot_climate_classification_geo(
-        results["climate_future"],
-        title="Future Climate Classification (SSP126, 2031–2060)"
-    )
- 
-
-vals = results["climate_future"].values
-print(np.unique(vals[~np.isnan(vals)]))
